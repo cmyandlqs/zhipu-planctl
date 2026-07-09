@@ -96,12 +96,14 @@ class FeishuBot:
         self._last_notified_pct = pct
 
     def send_status(self, quota_data: dict, cold_start_log: Optional[str] = None,
-                    chat_id: Optional[str] = None):
+                    chat_id: Optional[str] = None,
+                    cold_start_times: Optional[list[str]] = None):
         """把当前额度渲染成一条报告消息。
 
         chat_id 传了 → 发给指定 chat（回复命令发起人）；
         没传 → 发给默认告警频道。
         cold_start_log 是可选附加行，会拼接在状态后面。
+        cold_start_times 是当天的冷启动时间节点列表，用于显示时间窗口。
         """
         target_chat_id = chat_id or self.notify_chat_id
         if not target_chat_id:
@@ -123,6 +125,8 @@ class FeishuBot:
         else:
             msg = f"❌ 查询失败: {quota_data.get('error', '未知')}"
 
+        if cold_start_times:
+            msg += f"\n⏰ 自动冷启动: {', '.join(cold_start_times)}"
         if cold_start_log:
             msg += f"\n{cold_start_log}"
         self.send_message(msg, chat_id=target_chat_id)

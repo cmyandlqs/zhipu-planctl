@@ -8,6 +8,7 @@ import logging
 import signal
 import sys
 import time
+from typing import Optional
 
 from .client import create_client
 from .config import load_config
@@ -88,7 +89,7 @@ def main():
     def _cmd_status(chat_id: str):
         """『查额度』：拉一次额度，回送给发起命令的 chat。"""
         quota = scheduler.check_quota_now(client)
-        feishu.send_status(quota, chat_id=chat_id)
+        feishu.send_status(quota, chat_id=chat_id, cold_start_times=cold_start_times)
 
     def _cmd_cold_start(chat_id: str):
         """『冷启动』：按需触发一次，回送结果给发起者。"""
@@ -188,7 +189,7 @@ def main():
             client=client,
             model=cs_model,
             prompt=cs_prompt,
-            on_cold_start=lambda r: _on_cold_start(r, feishu, log),
+            on_cold_start=lambda r: _on_cold_start(r, feishu, log, cold_start_times),
             on_quota=lambda q: _on_quota(q, feishu, log),
         )
 
@@ -197,11 +198,13 @@ def main():
     log.info("已停止")
 
 
-def _on_cold_start(result: dict, feishu: FeishuBot, log: logging.Logger):
+def _on_cold_start(result: dict, feishu: FeishuBot, log: logging.Logger,
+                   cold_start_times: Optional[list[str]] = None):
     """scheduler.tick 的冷启动完成回调：写日志 + 推到默认告警频道。"""
     if result["cold_started"]:
         log.info("冷启动成功")
-        feishu.send_status(result["quota"], "✅ 冷启动成功")
+        feishu.send_status(result["quota"], "✅ 冷启动成功",
+                           cold_start_times=cold_start_times)
     else:
         reason = result["reason"]
         log.info(f"跳过冷启动: {reason}")
