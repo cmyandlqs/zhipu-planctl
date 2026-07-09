@@ -58,9 +58,9 @@ class Scheduler:
             self._current_day = today
             self._processed_slots.clear()
 
-    def check_quota_now(self, zhipu_client) -> dict:
+    def check_quota_now(self, client) -> dict:
         """拉一次额度，转成 cli 回调友好格式的 dict。"""
-        result = zhipu_client.query_quota()
+        result = client.query_quota()
         data: dict = {
             "ok": result.ok,
             "level": result.level,
@@ -80,14 +80,14 @@ class Scheduler:
                 })
         return data
 
-    def cold_start_if_needed(self, zhipu_client, model: str,
+    def cold_start_if_needed(self, client, model: str,
                              prompt: str = "hi") -> dict:
         """窗口已过期就冷启动，否则跳过。
 
         返回一个 dict：cold_started(bool), reason(str), quota(dict)。
         quota 字段总是包含本次查到的最新额度，方便调用方直接使用。
         """
-        quota = self.check_quota_now(zhipu_client)
+        quota = self.check_quota_now(client)
         if not quota["ok"]:
             return {"cold_started": False,
                     "reason": f"查询额度失败: {quota.get('error')}",
@@ -98,14 +98,14 @@ class Scheduler:
                     "reason": "当前窗口仍在有效期内，跳过冷启动",
                     "quota": quota}
 
-        ok = zhipu_client.cold_start(model=model, prompt=prompt)
+        ok = client.cold_start(model=model, prompt=prompt)
         return {
             "cold_started": ok,
             "reason": "冷启动成功" if ok else "冷启动请求失败",
             "quota": quota,
         }
 
-    def tick(self, zhipu_client, model: str, prompt: str,
+    def tick(self, client, model: str, prompt: str,
              on_cold_start: Callable, on_quota: Callable) -> None:
         """单次推进：根据当前时间决定触发冷启动 / 查额度 / 都触发 / 都不触发。
 
@@ -128,7 +128,7 @@ class Scheduler:
         # 分支 1：是冷启动且今天没处理过 → 跑冷启动
         if is_cs_pending:
             self._processed_slots.add(now_slot)
-            result = self.cold_start_if_needed(zhipu_client, model=model, prompt=prompt)
+            result = self.cold_start_if_needed(client, model=model, prompt=prompt)
             on_cold_start(result)
             # 冷启动内部已经查过额度了（cold_start_if_needed → check_quota_now）；
             # 若也到了 quota 时间，复用这次结果而不是再打一次 API。
@@ -140,7 +140,7 @@ class Scheduler:
         # 分支 2：纯 quota 时间点 → 查额度
         if is_quota_time:
             self._last_quota_check = now
-            quota = self.check_quota_now(zhipu_client)
+            quota = self.check_quota_now(client)
             on_quota(quota)
             return
 

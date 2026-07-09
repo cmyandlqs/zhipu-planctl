@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
 
 
@@ -57,10 +57,9 @@ class FeishuBot:
             return
         try:
             subprocess.run(
-                [LARK_CLI, "im", "send",
+                [LARK_CLI, "im", "+messages-send",
                  "--chat-id", cid,
-                 "--msg-type", "text",
-                 "--content", text],
+                 "--text", text],
                 capture_output=True, timeout=self.SEND_TIMEOUT, text=True,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -110,14 +109,14 @@ class FeishuBot:
 
         if quota_data.get("ok"):
             pct = quota_data.get("five_hour_utilization", "N/A")
-            reset = quota_data.get("five_hour_resets_at", "N/A")
+            reset_raw = quota_data.get("five_hour_resets_at", "")
             if isinstance(pct, float):
-                bar = self._progress_bar(pct)
+                remain = self._format_remaining(reset_raw)
+                emoji = "🟢" if pct < 50 else "🟡" if pct < 80 else "🔴"
                 msg = (
-                    f"🤖 智谱 Coding Plan 状态\n"
-                    f"套餐等级: {quota_data.get('level', 'N/A')}\n"
-                    f"5小时窗口: {bar} {pct:.1f}%\n"
-                    f"重置时间: {reset}"
+                    f"{emoji} 智谱 Coding Plan 状态\n"
+                    f"5小时窗口: {pct:.1f}%\n"
+                    f"{remain}后重置"
                 )
             else:
                 msg = f"🤖 智谱 Coding Plan 状态\n查询失败: {quota_data.get('error', '未知')}"
@@ -126,43 +125,94 @@ class FeishuBot:
 
         if cold_start_log:
             msg += f"\n{cold_start_log}"
-
-        msg += f"\n查询时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         self.send_message(msg, chat_id=target_chat_id)
 
     @staticmethod
-    def _progress_bar(pct: float, length: int = 20) -> str:
-        """把百分比渲染成 unicode 进度条。"""
-        filled = int(pct / 100 * length)
-        filled = max(0, min(filled, length))
-        return "█" * filled + "░" * (length - filled)
+    def _format_remaining(reset_iso: str) -> str:
+        """把 UTC ISO 时间转成剩余时长字符串。"""
+        if not reset_iso:
+            return "未知"
+        try:
+            if reset_iso.endswith("Z"):
+                reset_iso = reset_iso[:-1] + "+00:00"
+            utc_dt = datetime.fromisoformat(reset_iso)
+            if utc_dt.tzinfo is None:
+                utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+            bj_dt = utc_dt.astimezone(timezone(timedelta(hours=8)))
+            now = datetime.now(timezone(timedelta(hours=8)))
+            remain = bj_dt - now
+            total_minutes = remain.total_seconds() / 60
+            if total_minutes <= 0:
+                return "0min"
+            hours = int(total_minutes // 60)
+            minutes = int(total_minutes % 60)
+            if hours > 0:
+                return f"{hours}h{minutes:02d}min"
+            return f"{minutes}min"
+        except (ValueError, OSError):
+            return "未知"
 
     # ─────────────────────── 事件接收 ───────────────────────
 
     def _handle_event_line(self, line: str):
-        """解析一行 lark-cli stdout 的 JSON 事件，转发给命令处理器。"""
+        """解析一行 lark-cli stdout 的 JSON 事件，转发给命令处理器。
+
+        lark-cli 实际事件 schema（实测，2025–2026）：
+          {
+            "type": "im.message.receive_v1",         # 不是 "event"
+            "chat_id": "oc_...",
+            "chat_type": "group" | "p2p",
+            "sender_id": "ou_...",
+            "message_id": "om_...",
+            "content": "@BotName 查额度",               # 群聊中被 at，content 带 @ 前缀
+            "message_type": "text"
+          }
+
+        注意字段全部是顶层平铺的，没有 data 包装层。
+        """
+        import re as _re
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             return
 
-        # 我们只关心收到消息这个事件类型
-        if event.get("event") != "im.message.receive_v1":
+        # 字段名是 type（不是 event）
+        if event.get("type") != "im.message.receive_v1":
             return
 
-        data = event.get("data", {})
-        # lark-cli 的 content 是字符串化的 JSON，需要二次解析
-        content_raw = data.get("content", "{}")
-        chat_id = data.get("chat_id", "")
-        sender_id = data.get("sender", {}).get("sender_id", {}).get("open_id", "")
+        # 只处理文本消息（其他类型：image / file / post 等不在命令路由范围）
+        if event.get("message_type") != "text":
+            return
 
-        try:
-            content = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
-            text = content.get("text", "") if isinstance(content, dict) else str(content)
-        except (json.JSONDecodeError, AttributeError):
-            text = str(content_raw)
+        chat_id = event.get("chat_id", "")
+        sender_id = event.get("sender_id", "")
 
+        # 实测：content 直接是字符串（如 "@BotName 查额度"），不是 JSON。
+        # 老版 lark-cli 才会包成 {"text": "..."} 的 dict。为兼容两种情况都处理。
+        content_raw = event.get("content", "")
+        if isinstance(content_raw, dict):
+            text = content_raw.get("text", "")
+        elif isinstance(content_raw, str):
+            # 试一下是不是 JSON 字符串，失败就当裸文本
+            try:
+                parsed = json.loads(content_raw)
+                text = parsed.get("text", "") if isinstance(parsed, dict) else content_raw
+            except json.JSONDecodeError:
+                text = content_raw
+        else:
+            text = str(content_raw) if content_raw else ""
+
+        if not isinstance(text, str):
+            text = str(text)
+
+        # 群聊里被 @机器人 会把 "@BotName " 拼到最前面，需要剥掉再分发。
+        # 注意 bot display name 自身可能含空格（如 "sikm的飞书 CLI"），
+        # 所以 @ 后要允许跨多个 token；用 @\S+(?:\s\S+)*\s 把整段吃光。
+        text = _re.sub(r"^@\S+(?:\s\S+)*\s", "", text)
         text = text.strip().lower()
+
+        if not text:
+            return
 
         if self._command_handler:
             # 派发到外部注册的命令处理函数
@@ -181,27 +231,36 @@ class FeishuBot:
         t.start()
 
     def _listen_loop(self):
-        """守护线程主循环：跑 lark-cli event consume，按行解析事件。"""
+        """守护线程主循环：跑 lark-cli event consume，按行解析事件。
+
+        关键点：lark-cli 看到 stdin EOF 就自退出，所以必须传
+        stdin=subprocess.PIPE 让 Python 持有 stdin 不关。
+        """
+        import sys as _sys
         try:
             self._event_proc = subprocess.Popen(
                 [LARK_CLI, "event", "consume", "im.message.receive_v1"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,             # 保持打开，否则 lark-cli 立刻退出
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,         # 不用 stderr，避免 pipe 满阻塞
                 text=True, bufsize=1,
             )
+            print(f"[DEBUG] event consumer started pid={self._event_proc.pid}", file=_sys.stderr, flush=True)
             # 按行迭代 stdout，每行是一个 JSON 事件
             for line in self._event_proc.stdout:
                 if not self._running:
                     break
                 line = line.strip()
+                print(f"[DEBUG] raw line: {line!r}", file=_sys.stderr, flush=True)  # ← 临时调试
                 if not line:
                     continue
                 self._handle_event_line(line)
         except FileNotFoundError:
-            # lark-cli 不存在，跳过监听即可
             pass
-        except Exception:
-            # 任何其他异常都吞掉（守护线程不应该拖死主程序）
-            pass
+        except Exception as e:
+            print(f"[DEBUG] listen_loop exception: {e!r}", file=_sys.stderr, flush=True)
+        finally:
+            print(f"[DEBUG] event consumer loop exited", file=_sys.stderr, flush=True)
 
     def stop(self):
         """优雅停止监听：关掉标志 + terminate 子进程。"""

@@ -1,27 +1,33 @@
+# 当前使用的 provider: zhipu / minimax / opencode_go
+provider: zhipu
+
 zhipu:
-  # 智谱开放平台 API Key
   api_key: ""
-  # API 基础地址 (含 bigmodel.cn 走国内站，否则走国际站)
   base_url: "https://open.bigmodel.cn"
-  # 冷启动使用的模型 (Coding Plan 支持的主模型)
   cold_start_model: "glm-4-air"
-  # 冷启动的 prompt (极小请求即可触发窗口)
+  cold_start_prompt: "hi"
+
+minimax:
+  api_key: ""
+  base_url: ""
+  cold_start_model: ""
+  cold_start_prompt: "hi"
+
+opencode_go:
+  api_key: ""
+  base_url: ""
+  cold_start_model: ""
   cold_start_prompt: "hi"
 
 schedule:
-  # 每天自动冷启动的时间点 (24小时制)
   cold_start_times:
-    - "07:00"
-    - "12:00"
-    - "17:00"
-    - "22:00"
-  # 额度查询间隔 (分钟)
+    - "06:00"
+    - "11:00"
+    - "16:00"
+    - "21:00"
   quota_check_interval_minutes: 5
 
 feishu:
-  # 飞书通知目标 chat_id (通过 lark-cli 发送消息)
   notify_chat_id: ""
-  # 是否启用飞书 Bot 命令监听
   enable_bot: true
-  # 当额度超过该百分比时推送通知 (0=关闭)
   notify_threshold: 0

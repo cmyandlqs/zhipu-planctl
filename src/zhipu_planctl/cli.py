@@ -9,7 +9,7 @@ import signal
 import sys
 import time
 
-from .client import ZhipuClient
+from .client import create_client
 from .config import load_config
 from .feishu_bot import FeishuBot
 from .scheduler import Scheduler
@@ -23,7 +23,7 @@ log = logging.getLogger("zhipu-plan")
 
 
 # 默认配置（找不到配置时的兜底）
-_DEFAULT_COLD_START_TIMES = ["07:00", "12:00", "17:00", "22:00"]
+_DEFAULT_COLD_START_TIMES = ["06:00", "11:00", "16:00", "21:00"]
 _DEFAULT_QUOTA_INTERVAL_MIN = 5
 _DEFAULT_COLD_START_MODEL = "glm-4.7"
 _DEFAULT_COLD_START_PROMPT = "hi"
@@ -54,27 +54,30 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    z_cfg = cfg.get("zhipu", {})
     s_cfg = cfg.get("schedule", {})
     f_cfg = cfg.get("feishu", {})
 
-    if not z_cfg.get("api_key"):
-        log.error("请在配置文件中设置 zhipu.api_key")
+    try:
+        client = create_client(cfg)
+    except ValueError as e:
+        log.error(str(e))
         sys.exit(1)
 
-    # ─── 装配对象 ───
-    client = ZhipuClient(
-        api_key=z_cfg["api_key"],
-        base_url=z_cfg.get("base_url", "https://open.bigmodel.cn"),
-    )
+    if not client.api_key:
+        log.error("请在配置文件中设置对应 provider 的 api_key")
+        sys.exit(1)
+
+    # 取当前 provider 的配置段
+    provider = cfg.get("provider", "zhipu")
+    p_cfg = cfg.get(provider, cfg)  # 向后兼容
     feishu = FeishuBot(
         notify_chat_id=f_cfg.get("notify_chat_id", ""),
         notify_threshold=f_cfg.get("notify_threshold", 0),
     )
     cold_start_times = s_cfg.get("cold_start_times", _DEFAULT_COLD_START_TIMES)
     quota_interval = s_cfg.get("quota_check_interval_minutes", _DEFAULT_QUOTA_INTERVAL_MIN)
-    cs_model = z_cfg.get("cold_start_model", _DEFAULT_COLD_START_MODEL)
-    cs_prompt = z_cfg.get("cold_start_prompt", _DEFAULT_COLD_START_PROMPT)
+    cs_model = p_cfg.get("cold_start_model", _DEFAULT_COLD_START_MODEL)
+    cs_prompt = p_cfg.get("cold_start_prompt", _DEFAULT_COLD_START_PROMPT)
     scheduler = Scheduler(
         cold_start_times=cold_start_times,
         quota_check_interval_minutes=quota_interval,
@@ -182,7 +185,7 @@ def main():
             break
 
         scheduler.tick(
-            zhipu_client=client,
+            client=client,
             model=cs_model,
             prompt=cs_prompt,
             on_cold_start=lambda r: _on_cold_start(r, feishu, log),
