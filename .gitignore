@@ -1,6 +1,21 @@
+# 配置
 config.yaml
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# 编辑器
+.vscode/
+.idea/
+
+# 虚拟环境 / 系统
 venv/
 .env
 *.log
+
+# 包构建产物（pip install -e . 生成的元数据）
+*.egg-info/
+build/
+dist/

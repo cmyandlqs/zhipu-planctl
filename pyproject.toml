@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zhipu-planctl"
+version = "1.0.0"
+description = "智谱 Coding Plan 自动管理工具：定时冷启动 + 额度监控 + 飞书 Bot"
+requires-python = ">=3.8"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+zhipu-planctl = "zhipu_planctl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

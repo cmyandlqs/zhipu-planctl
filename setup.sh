@@ -12,13 +12,11 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-# 创建目录
+# 拷贝源码
 mkdir -p "${INSTALL_DIR}"
-
-# 复制文件
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cp -r "${SCRIPT_DIR}/"*.py "${INSTALL_DIR}/"
-cp "${SCRIPT_DIR}/requirements.txt" "${INSTALL_DIR}/"
+cp -r "${SCRIPT_DIR}/src" "${INSTALL_DIR}/"
+cp "${SCRIPT_DIR}/pyproject.toml" "${INSTALL_DIR}/"
 
 if [ ! -f "${INSTALL_DIR}/config.yaml" ]; then
     cp "${SCRIPT_DIR}/config.yaml.example" "${INSTALL_DIR}/config.yaml"
@@ -30,7 +28,8 @@ fi
 cd "${INSTALL_DIR}"
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install --upgrade pip
+pip install -e .
 
 echo "依赖安装完成"
 
@@ -45,7 +44,7 @@ Wants=network-online.target
 Type=simple
 User=${USER}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/main.py
+ExecStart=${INSTALL_DIR}/venv/bin/python -m zhipu_planctl
 Restart=always
 RestartSec=30
 
@@ -66,4 +65,4 @@ echo "  3. 开机自启:     sudo systemctl enable ${SERVICE_NAME}"
 echo "  4. 查看日志:     sudo journalctl -u ${SERVICE_NAME} -f"
 echo ""
 echo "快速测试:"
-echo "  cd ${INSTALL_DIR} && python main.py --query"
+echo "  cd ${INSTALL_DIR} && source venv/bin/activate && python -m zhipu_planctl --query"
