@@ -81,11 +81,14 @@ class Scheduler:
         return data
 
     def cold_start_if_needed(self, client, model: str,
-                             prompt: str = "hi") -> dict:
-        """窗口已过期就冷启动，否则跳过。
+                             prompt: str = "hi",
+                             force: bool = False) -> dict:
+        """窗口已过期或强制模式就冷启动，否则跳过。
+
+        force=True 时忽略窗口过期检查，直接冷启动（用于定时时间槽）。
+        force=False 时仅窗口已过期才冷启动（用于手动查询）。
 
         返回一个 dict：cold_started(bool), reason(str), quota(dict)。
-        quota 字段总是包含本次查到的最新额度，方便调用方直接使用。
         """
         quota = self.check_quota_now(client)
         if not quota["ok"]:
@@ -93,7 +96,7 @@ class Scheduler:
                     "reason": f"查询额度失败: {quota.get('error')}",
                     "quota": quota}
 
-        if not quota.get("five_hour_expired", True):
+        if not force and not quota.get("five_hour_expired", True):
             return {"cold_started": False,
                     "reason": "当前窗口仍在有效期内，跳过冷启动",
                     "quota": quota}
@@ -125,10 +128,10 @@ class Scheduler:
             or (now - self._last_quota_check) >= self.quota_check_interval
         )
 
-        # 分支 1：是冷启动且今天没处理过 → 跑冷启动
+        # 分支 1：是冷启动且今天没处理过 → 强制冷启动（不管窗口是否过期）
         if is_cs_pending:
             self._processed_slots.add(now_slot)
-            result = self.cold_start_if_needed(client, model=model, prompt=prompt)
+            result = self.cold_start_if_needed(client, model=model, prompt=prompt, force=True)
             on_cold_start(result)
             # 冷启动内部已经查过额度了（cold_start_if_needed → check_quota_now）；
             # 若也到了 quota 时间，复用这次结果而不是再打一次 API。

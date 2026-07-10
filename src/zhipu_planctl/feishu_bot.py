@@ -113,13 +113,14 @@ class FeishuBot:
             pct = quota_data.get("five_hour_utilization", "N/A")
             reset_raw = quota_data.get("five_hour_resets_at", "")
             if isinstance(pct, float):
-                remain = self._format_remaining(reset_raw)
                 emoji = "🟢" if pct < 50 else "🟡" if pct < 80 else "🔴"
                 msg = (
                     f"{emoji} 智谱 Coding Plan 状态\n"
-                    f"5小时窗口: {pct:.1f}%\n"
-                    f"{remain}后重置"
+                    f"5小时窗口: {pct:.1f}%"
                 )
+                if reset_raw:
+                    remain = self._format_remaining(reset_raw)
+                    msg += f"\n{remain}后重置"
             else:
                 msg = f"🤖 智谱 Coding Plan 状态\n查询失败: {quota_data.get('error', '未知')}"
         else:

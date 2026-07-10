@@ -93,7 +93,7 @@ def main():
 
     def _cmd_cold_start(chat_id: str):
         """『冷启动』：按需触发一次，回送结果给发起者。"""
-        result = scheduler.cold_start_if_needed(client, model=cs_model, prompt=cs_prompt)
+        result = scheduler.cold_start_if_needed(client, model=cs_model, prompt=cs_prompt, force=True)
         if result["cold_started"]:
             feishu.send_message("✅ 冷启动成功", chat_id=chat_id)
         else:
