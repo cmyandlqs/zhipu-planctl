@@ -238,6 +238,20 @@ class CommandRouter:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return
 
+    if args.watch:
+        log.info("进入 --watch 实时仪表盘模式")
+        # 简易 watch 循环（每 5 秒更新一次）
+        while running:
+            try:
+                quota = scheduler.check_quota_now(client)
+                result = {"quota": quota}
+                on_cs(result)  # 使用 on_cold_start 回调（虽不触发冷启动，但显示状态）
+                time.sleep(5)
+            except Exception as e:
+                log.warning("watch 模式异常: %s", e)
+                time.sleep(5)
+        return
+
     # ─── 守护模式 ───
 
     feishu_bot_active = False
