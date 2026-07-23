@@ -306,6 +306,7 @@ class CommandRouter:
         except Exception:
             log.exception("热重载配置失败")
 
+    # 信号处理：SIGTERM 最坏等待 1s（比原来更可靠）
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     try:
