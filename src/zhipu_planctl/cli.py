@@ -81,6 +81,7 @@ def main():
     parser.add_argument("--query", action="store_true", help="仅查询额度后退出")
     parser.add_argument("--log-dir", default="./logs", help="日志目录 (默认 ./logs)")
     parser.add_argument("--version", action="store_true", help="显示版本")
+    parser.add_argument("--watch", action="store_true", help="实时仪表盘模式（终端显示额度、剩余时间等）")
     args = parser.parse_args()
 
     if args.version:
