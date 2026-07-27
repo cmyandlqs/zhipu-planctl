@@ -1,10 +1,23 @@
+# ============================================================
+# 智谱 Coding Plan 自动管理工具 — 配置文件
+# ============================================================
+# 支持厂商: zhipu / minimax (待实现) / opencode_go
+#
+# 热重载: 修改此文件后发送 SIGHUP (kill -HUP <pid>) 即可热更新
+# 支持的配置:
+#   - cold_start_times     (新增时间槽，当日下次 tick 生效)
+#   - quota_check_interval (实时生效)
+#   - cold_start_model / cold_start_prompt (实时生效)
+#   - api_key              (重新创建 client，实时生效)
+# ============================================================
+
 # 当前使用的 provider: zhipu / minimax / opencode_go
 provider: zhipu
 
 zhipu:
   api_key: ""
   base_url: "https://open.bigmodel.cn"
-  cold_start_model: "glm-4-air"
+  cold_start_model: "glm-4.7"
   cold_start_prompt: "hi"
 
 minimax:
@@ -15,19 +28,20 @@ minimax:
 
 opencode_go:
   api_key: ""
-  base_url: ""
-  cold_start_model: ""
+  base_url: "https://opencode.ai/zen/go/v1/chat/completions"
+  cold_start_model: "deepseek-v4-flash"
   cold_start_prompt: "hi"
 
+# 调度配置（支持 SIGHUP 热重载）
 schedule:
   cold_start_times:
     - "06:00"
-    - "11:00"
     - "16:00"
     - "21:00"
   quota_check_interval_minutes: 5
 
+# 飞书 Bot 配置
 feishu:
   notify_chat_id: ""
   enable_bot: true
-  notify_threshold: 0
+  notify_threshold: 0     # 百分比阈值，超过时飞书告警 (0 = 关闭)

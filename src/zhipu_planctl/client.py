@@ -10,16 +10,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 from urllib import request, error as urllib_error
 
+_log = logging.getLogger("zhipu-plan.client")
 
 TIER_FIVE_HOUR = "five_hour"
 TIER_WEEKLY = "weekly_limit"
+
+_ZHIPU_UNIT_FIVE_HOUR = 3
+_ZHIPU_UNIT_WEEKLY = 6
 
 
 @dataclass
@@ -111,7 +115,7 @@ class ZhipuPlanClient(BasePlanClient):
 
     def cold_start(self, model: str = "glm-4-air", prompt: str = "hi",
                    timeout: float = 30.0) -> bool:
-        url = f"{self._host}/api/paas/v4/chat/completions"
+        url = f"{self._host}/api/coding/paas/v4/chat/completions"
         body = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -124,15 +128,17 @@ class ZhipuPlanClient(BasePlanClient):
 
         try:
             with request.urlopen(req, timeout=timeout) as resp:
-                if resp.status != 200:
-                    return False
                 resp_body = json.loads(resp.read().decode("utf-8"))
-                return bool(resp_body.get("success", True))
-        except urllib_error.HTTPError:
+                choices = resp_body.get("choices")
+                return isinstance(choices, list) and len(choices) > 0
+        except urllib_error.HTTPError as e:
+            _log.debug("cold_start HTTP %s", e.code)
             return False
-        except urllib_error.URLError:
+        except urllib_error.URLError as e:
+            _log.debug("cold_start network error: %s", e.reason)
             return False
         except Exception:
+            _log.exception("cold_start unexpected error")
             return False
 
     def _parse_tiers(self, data: dict) -> list[Tier]:
@@ -163,10 +169,10 @@ class ZhipuPlanClient(BasePlanClient):
             entry = (reset_ms, pct, reset_iso)
 
             unit = item.get("unit")
-            if unit == 3:
+            if unit == _ZHIPU_UNIT_FIVE_HOUR:
                 if five_hour is None:
                     five_hour = entry
-            elif unit == 6:
+            elif unit == _ZHIPU_UNIT_WEEKLY:
                 if weekly is None:
                     weekly = entry
             else:
@@ -187,6 +193,8 @@ class ZhipuPlanClient(BasePlanClient):
 
     @staticmethod
     def _ms_to_iso(ms: int) -> Optional[str]:
+        if ms <= 0:
+            return None
         try:
             dt = datetime.fromtimestamp(ms // 1000, tz=timezone.utc)
             return dt.isoformat()
@@ -283,8 +291,8 @@ class OpenCodeGoPlanClient(BasePlanClient):
     def query_quota(self, timeout: float = 15.0) -> QuotaResult:
         """查询 Coding Plan 额度。
 
-        发送极小请求验证 API key 有效性。由于无公开用量查询 API，
-        通过请求 success 推断 key 有效，真实用量请到控制台查看。
+        OpenCode Go 无公开用量查询 API，仅能验证 key 有效性。
+        额度请在 https://opencode.ai/auth 控制台查看。
         """
         if not self.api_key:
             return QuotaResult(ok=False, error="API Key 未配置", credential_valid=False)
@@ -301,18 +309,10 @@ class OpenCodeGoPlanClient(BasePlanClient):
                 credential_valid=False,
             )
 
-        # 成功调用，key 有效
-        # cost 字段可能有当前请求费用，但不是总用量
         return QuotaResult(
             ok=True,
-            level="go_subscription",
-            tiers=[
-                Tier(
-                    name=TIER_FIVE_HOUR,
-                    utilization=0.0,
-                    resets_at=None,
-                ),
-            ],
+            level="go_subscription (用量请在 opencode.ai/auth 查看)",
+            tiers=[],
             queried_at=int(time.time() * 1000),
             credential_valid=True,
         )
@@ -350,9 +350,7 @@ def create_client(cfg: dict) -> BasePlanClient:
     """
     provider = cfg.get("provider", "zhipu")
     p_cfg = cfg.get(provider, {})
-    # 兼容旧配置：直接传入 api_key 而非嵌套
-    if not p_cfg and cfg.get("api_key"):
-        provider = "zhipu"
+    if provider == "zhipu" and not p_cfg and cfg.get("api_key"):
         p_cfg = cfg
 
     cls = _PROVIDER_MAP.get(provider)

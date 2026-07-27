@@ -9,13 +9,18 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import re
 import subprocess
 import threading
+import time as _time
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
 
 
-LARK_CLI = "lark-cli"   # 依赖宿主机的 lark-cli 命令（提前登录）
+LARK_CLI = "lark-cli"
+_log = logging.getLogger("zhipu-plan.feishu")
 
 
 class FeishuBot:
@@ -31,7 +36,7 @@ class FeishuBot:
     """
 
     # lark-cli 调用的默认超时（秒）
-    SEND_TIMEOUT = 15.0
+    SEND_TIMEOUT = 30.0
 
     def __init__(self, notify_chat_id: str = "", notify_threshold: int = 0):
         # 默认告警频道（config 配的）；命令回复走 chat_id 参数，不改这里
@@ -56,15 +61,25 @@ class FeishuBot:
         if not cid:
             return
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [LARK_CLI, "im", "+messages-send",
                  "--chat-id", cid,
                  "--text", text],
-                capture_output=True, timeout=self.SEND_TIMEOUT, text=True,
+                capture_output=True, text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=self.SEND_TIMEOUT,
+                start_new_session=True,
+                env={**os.environ, "PATH": os.environ.get("PATH", ""),
+                     "HOME": os.environ.get("HOME", "")},
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            # lark-cli 不可用时不抛，避免阻塞主循环
-            pass
+            if result.returncode != 0:
+                _log.warning("lark-cli send failed rc=%d: %s", result.returncode, result.stderr.strip())
+        except subprocess.TimeoutExpired:
+            _log.warning("lark-cli send timeout")
+        except FileNotFoundError:
+            _log.warning("lark-cli not found")
+        except OSError as e:
+            _log.warning("lark-cli send OS error: %s", e)
 
     def notify_quota(self, quota_data: dict):
         """额度告警：超过阈值时推一条到默认告警频道。同一百分比只发一次（防抖）。"""
@@ -87,11 +102,11 @@ class FeishuBot:
         if self._last_notified_pct is not None and pct == self._last_notified_pct:
             return
 
-        reset = quota_data.get("five_hour_resets_at", "未知")
+        reset = self._to_beijing(quota_data.get("five_hour_resets_at", ""))
         self.send_message(
             f"⚠️ 智谱 Coding Plan 额度提醒\n"
             f"已用: {pct}%\n"
-            f"重置时间: {reset}"
+            f"{reset} 重置"
         )
         self._last_notified_pct = pct
 
@@ -115,14 +130,17 @@ class FeishuBot:
             if isinstance(pct, float):
                 emoji = "🟢" if pct < 50 else "🟡" if pct < 80 else "🔴"
                 msg = (
-                    f"{emoji} 智谱 Coding Plan 状态\n"
+                    f"{emoji} Coding Plan 状态\n"
                     f"5小时窗口: {pct:.1f}%"
                 )
                 if reset_raw:
-                    remain = self._format_remaining(reset_raw)
-                    msg += f"\n{remain}后重置"
+                    msg += f"\n{self._to_beijing(reset_raw)} 重置"
+                else:
+                    msg += "\n重置时间未知"
+            elif quota_data.get("level", ""):
+                msg = f"🤖 Coding Plan 状态\n{quota_data['level']}"
             else:
-                msg = f"🤖 智谱 Coding Plan 状态\n查询失败: {quota_data.get('error', '未知')}"
+                msg = f"🤖 Coding Plan 状态\n用量数据不可用"
         else:
             msg = f"❌ 查询失败: {quota_data.get('error', '未知')}"
 
@@ -131,6 +149,23 @@ class FeishuBot:
         if cold_start_log:
             msg += f"\n{cold_start_log}"
         self.send_message(msg, chat_id=target_chat_id)
+
+    @staticmethod
+    def _to_beijing(reset_iso: str) -> str:
+        """UTC ISO 时间 → 北京时间 HH:MM。失败返回 "未知"。"""
+        if not reset_iso:
+            return "未知"
+        try:
+            t = reset_iso
+            if t.endswith("Z"):
+                t = t[:-1] + "+00:00"
+            utc_dt = datetime.fromisoformat(t)
+            if utc_dt.tzinfo is None:
+                utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+            bj_dt = utc_dt.astimezone(timezone(timedelta(hours=8)))
+            return bj_dt.strftime("%H:%M")
+        except (ValueError, OSError):
+            return "未知"
 
     @staticmethod
     def _format_remaining(reset_iso: str) -> str:
@@ -175,7 +210,6 @@ class FeishuBot:
 
         注意字段全部是顶层平铺的，没有 data 包装层。
         """
-        import re as _re
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -213,7 +247,7 @@ class FeishuBot:
         # 群聊里被 @机器人 会把 "@BotName " 拼到最前面，需要剥掉再分发。
         # 注意 bot display name 自身可能含空格（如 "sikm的飞书 CLI"），
         # 所以 @ 后要允许跨多个 token；用 @\S+(?:\s\S+)*\s 把整段吃光。
-        text = _re.sub(r"^@\S+(?:\s\S+)*\s", "", text)
+        text = re.sub(r"^@\S+(?:\s\S+)*\s", "", text)
         text = text.strip().lower()
 
         if not text:
@@ -237,35 +271,40 @@ class FeishuBot:
 
     def _listen_loop(self):
         """守护线程主循环：跑 lark-cli event consume，按行解析事件。
+        子进程退出后自动重连，直到 self._running 为 False。
 
         关键点：lark-cli 看到 stdin EOF 就自退出，所以必须传
         stdin=subprocess.PIPE 让 Python 持有 stdin 不关。
         """
-        import sys as _sys
-        try:
-            self._event_proc = subprocess.Popen(
-                [LARK_CLI, "event", "consume", "im.message.receive_v1"],
-                stdin=subprocess.PIPE,             # 保持打开，否则 lark-cli 立刻退出
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,         # 不用 stderr，避免 pipe 满阻塞
-                text=True, bufsize=1,
-            )
-            print(f"[DEBUG] event consumer started pid={self._event_proc.pid}", file=_sys.stderr, flush=True)
-            # 按行迭代 stdout，每行是一个 JSON 事件
-            for line in self._event_proc.stdout:
-                if not self._running:
-                    break
-                line = line.strip()
-                print(f"[DEBUG] raw line: {line!r}", file=_sys.stderr, flush=True)  # ← 临时调试
-                if not line:
-                    continue
-                self._handle_event_line(line)
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            print(f"[DEBUG] listen_loop exception: {e!r}", file=_sys.stderr, flush=True)
-        finally:
-            print(f"[DEBUG] event consumer loop exited", file=_sys.stderr, flush=True)
+        while self._running:
+            try:
+                self._event_proc = subprocess.Popen(
+                    [LARK_CLI, "event", "consume", "im.message.receive_v1"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True, bufsize=1,
+                )
+                _log.debug("event consumer started pid=%d", self._event_proc.pid)
+                for line in self._event_proc.stdout:
+                    if not self._running:
+                        break
+                    line = line.strip()
+                    _log.debug("raw event: %s", line)
+                    if not line:
+                        continue
+                    self._handle_event_line(line)
+            except FileNotFoundError:
+                break
+            except Exception as e:
+                _log.exception("listen_loop exception")
+            finally:
+                if self._event_proc:
+                    self._event_proc.terminate()
+                    self._event_proc = None
+            if self._running:
+                _time.sleep(5)
+        _log.debug("event consumer loop exited")
 
     def stop(self):
         """优雅停止监听：关掉标志 + terminate 子进程。"""
