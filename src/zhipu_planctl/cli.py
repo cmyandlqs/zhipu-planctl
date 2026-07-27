@@ -15,7 +15,7 @@ import os
 from functools import partial
 
 from .client import create_client
-from .config import load_config, CONFIG_PATHS
+from .config import load_config
 from .feishu_bot import FeishuBot
 from .scheduler import Scheduler
 
@@ -73,57 +73,6 @@ def _init_log_file(log_dir: str) -> logging.FileHandler:
     ))
     return fh
 
-
-def main():
-    parser = argparse.ArgumentParser(description="智谱 Coding Plan 自动管理工具")
-    parser.add_argument("-c", "--config", help="配置文件路径")
-    parser.add_argument("--once", action="store_true", help="仅执行一次冷启动后退出")
-    parser.add_argument("--query", action="store_true", help="仅查询额度后退出")
-    parser.add_argument("--log-dir", default="./logs", help="日志目录 (默认 ./logs)")
-    parser.add_argument("--version", action="store_true", help="显示版本")
-    parser.add_argument("--watch", action="store_true", help="实时仪表盘模式（终端显示额度、剩余时间等）")
-    args = parser.parse_args()
-
-    if args.version:
-        from . import __version__
-        print(f"zhipu-planctl {__version__}")
-        sys.exit(0)
-
-    if args.log_dir:
-        _setup_log_dir(args.log_dir)
-        fh = _init_log_file(args.log_dir)
-        logging.getLogger().addHandler(fh)
-
-    cfg = load_config(args.config)
-    s_cfg = cfg.get("schedule", {})
-    f_cfg = cfg.get("feishu", {})
-
-    try:
-        client = create_client(cfg)
-    except ValueError as e:
-        log.error(str(e))
-        sys.exit(1)
-
-    if not client.api_key:
-        log.error("请在配置文件中设置对应 provider 的 api_key")
-        sys.exit(1)
-
-    provider = cfg.get("provider", "zhipu")
-    p_cfg = cfg.get(provider, {})
-    feishu = FeishuBot(
-        notify_chat_id=f_cfg.get("notify_chat_id", ""),
-        notify_threshold=f_cfg.get("notify_threshold", 0),
-    )
-    cold_start_times = s_cfg.get("cold_start_times", _DEFAULT_COLD_START_TIMES)
-    quota_interval = s_cfg.get("quota_check_interval_minutes", _DEFAULT_QUOTA_INTERVAL_MIN)
-    cs_model = p_cfg.get("cold_start_model", _DEFAULT_COLD_START_MODEL)
-    cs_prompt = p_cfg.get("cold_start_prompt", _DEFAULT_COLD_START_PROMPT)
-    scheduler = Scheduler(
-        cold_start_times=cold_start_times,
-        quota_check_interval_minutes=quota_interval,
-    )
-
-    # ─── 命令处理 ───
 
 class CommandRouter:
     """命令路由器：分离命令解析、验证和执行逻辑，减少 cli.py 复杂度。"""
@@ -210,6 +159,63 @@ class CommandRouter:
         if handler:
             handler(chat_id)
 
+
+def main():
+    parser = argparse.ArgumentParser(description="智谱 Coding Plan 自动管理工具")
+    parser.add_argument("-c", "--config", help="配置文件路径")
+    parser.add_argument("--once", action="store_true", help="仅执行一次冷启动后退出")
+    parser.add_argument("--query", action="store_true", help="仅查询额度后退出")
+    parser.add_argument("--log-dir", default="./logs", help="日志目录 (默认 ./logs)")
+    parser.add_argument("--version", action="store_true", help="显示版本")
+    parser.add_argument("--watch", action="store_true", help="实时仪表盘模式（终端显示额度、剩余时间等）")
+    args = parser.parse_args()
+
+    if args.version:
+        from . import __version__
+        print(f"zhipu-planctl {__version__}")
+        sys.exit(0)
+
+    if args.log_dir:
+        _setup_log_dir(args.log_dir)
+        fh = _init_log_file(args.log_dir)
+        logging.getLogger().addHandler(fh)
+
+    cfg = load_config(args.config)
+    s_cfg = cfg.get("schedule", {})
+    f_cfg = cfg.get("feishu", {})
+
+    try:
+        client = create_client(cfg)
+    except ValueError as e:
+        log.error(str(e))
+        sys.exit(1)
+
+    if not client.api_key:
+        log.error("请在配置文件中设置对应 provider 的 api_key")
+        sys.exit(1)
+
+    provider = cfg.get("provider", "zhipu")
+    p_cfg = cfg.get(provider, {})
+    feishu = FeishuBot(
+        notify_chat_id=f_cfg.get("notify_chat_id", ""),
+        notify_threshold=f_cfg.get("notify_threshold", 0),
+    )
+    cold_start_times = s_cfg.get("cold_start_times", _DEFAULT_COLD_START_TIMES)
+    quota_interval = s_cfg.get("quota_check_interval_minutes", _DEFAULT_QUOTA_INTERVAL_MIN)
+    cs_model = p_cfg.get("cold_start_model", _DEFAULT_COLD_START_MODEL)
+    cs_prompt = p_cfg.get("cold_start_prompt", _DEFAULT_COLD_START_PROMPT)
+    scheduler = Scheduler(
+        cold_start_times=cold_start_times,
+        quota_check_interval_minutes=quota_interval,
+    )
+
+    # ─── 命令处理 ───
+
+    router = CommandRouter(scheduler, client, feishu)
+
+    def handle_command(text: str, chat_id: str, sender_id: str):
+        router.dispatch(text, chat_id, sender_id)
+
     # ─── 一次性模式 ───
 
     if args.query:
@@ -238,14 +244,22 @@ class CommandRouter:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return
 
+    running = True
+    on_cs = partial(_on_cold_start, feishu=feishu, log=log)
+    on_q = partial(_on_quota, feishu=feishu, log=log, scheduler=scheduler)
+
     if args.watch:
         log.info("进入 --watch 实时仪表盘模式")
         # 简易 watch 循环（每 5 秒更新一次）
         while running:
             try:
                 quota = scheduler.check_quota_now(client)
-                result = {"quota": quota}
-                on_cs(result)  # 使用 on_cold_start 回调（虽不触发冷启动，但显示状态）
+                if quota.get("ok"):
+                    log.info("额度: %.1f%% | 重置: %s",
+                             quota.get("five_hour_utilization", 0),
+                             quota.get("five_hour_resets_at", "N/A"))
+                else:
+                    log.warning("查询失败: %s", quota.get("error", "未知"))
                 time.sleep(5)
             except Exception as e:
                 log.warning("watch 模式异常: %s", e)
@@ -270,13 +284,8 @@ class CommandRouter:
     if feishu.notify_chat_id:
         feishu.send_message("🚀 智谱 Coding Plan 管理工具已启动")
 
-    on_cs = partial(_on_cold_start, feishu=feishu, log=log)
-    on_q = partial(_on_quota, feishu=feishu, log=log, scheduler=scheduler)
-
     scheduler.tick(client=client, model=cs_model, prompt=cs_prompt,
                    on_cold_start=on_cs, on_quota=on_q)
-
-    running = True
 
     def shutdown(_sig, _frame):
         nonlocal running

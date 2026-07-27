@@ -52,7 +52,6 @@ StartLimitBurst=3
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 Environment=PATH=${INSTALL_DIR}/venv/bin:${PATH}
-ExecStartPre=-git -C ${INSTALL_DIR} pull
 ExecStart=${INSTALL_DIR}/venv/bin/python -m zhipu_planctl
 Restart=always
 RestartSec=30
