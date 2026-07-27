@@ -42,6 +42,12 @@ class ParseTimeTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     Scheduler._parse_time(bad)
 
+    def test_invalid_numeric_range(self):
+        for bad in ("24:00", "23:60", "-1:00", "10:-1", "aa:00"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    Scheduler._parse_time(bad)
+
 
 # ────────────── 冷启动验证 + 重试测试（含回归 C2）──────────────
 

@@ -245,9 +245,8 @@ class FeishuBot:
             text = str(text)
 
         # 群聊里被 @机器人 会把 "@BotName " 拼到最前面，需要剥掉再分发。
-        # 注意 bot display name 自身可能含空格（如 "sikm的飞书 CLI"），
-        # 所以 @ 后要允许跨多个 token；用 @\S+(?:\s\S+)*\s 把整段吃光。
-        text = re.sub(r"^@\S+(?:\s\S+)*\s", "", text)
+        # 只移除第一个 mention token，避免把后面的真实命令一并吃掉。
+        text = re.sub(r"^@\S+\s+", "", text)
         text = text.strip().lower()
 
         if not text:

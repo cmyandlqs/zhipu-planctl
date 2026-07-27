@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import logging.handlers
 import signal
 import sys
 import time
@@ -28,10 +29,11 @@ log = logging.getLogger("zhipu-plan")
 
 
 # 默认配置（找不到配置时的兜底）
-_DEFAULT_COLD_START_TIMES = ["06:00", "16:00", "21:00"]
+_DEFAULT_COLD_START_TIMES = ["06:00", "11:00", "16:00", "21:00"]
 _DEFAULT_QUOTA_INTERVAL_MIN = 5
 _DEFAULT_COLD_START_MODEL = "glm-4.7"
 _DEFAULT_COLD_START_PROMPT = "hi"
+_DEFAULT_LOG_RETENTION_HOURS = 48
 
 # 主循环 tick 间隔（秒）。Scheduler 内部有自己更细的时间判定。
 _TICK_INTERVAL_SEC = 30
@@ -41,31 +43,60 @@ _TICK_INTERVAL_SEC = 30
 # 扁平 dict，每个别名映射到一个处理器
 _COMMAND_MAP: dict[str, str] = {
     "查额度": "status", "额度": "status", "quota": "status", "status": "status", "状态": "status",
-    "冷启动": "cold_start", "cold start": "cold_start", "cold_start": "cold_start",
+    "冷启动": "cold_start", "cold start": "cold_start", "cold_start": "cold_start", "refresh": "cold_start",
     "刷新": "cold_start", "重置": "cold_start",
     "help": "help", "帮助": "help", "菜单": "help", "命令": "help",
     "改时间": "set_times", "settime": "set_times", "冷启动时间": "set_times",
 }
 
 
-def _setup_log_dir(log_dir: str):
-    """创建日志目录并清理超过 24 小时的旧日志。"""
+def _setup_log_dir(log_dir: str, retention_hours: int = _DEFAULT_LOG_RETENTION_HOURS):
+    """创建日志目录并清理超过 retention_hours 的旧日志。"""
     os.makedirs(log_dir, exist_ok=True)
-    cutoff = time.time() - 86400
-    for old in glob.glob(os.path.join(log_dir, "zhipu-planctl-*.log")):
-        try:
-            if os.path.getmtime(old) < cutoff:
-                os.remove(old)
-                log.info("清理旧日志: %s", old)
-        except OSError:
-            pass
+    cutoff = time.time() - max(retention_hours, 1) * 3600
+    for pattern in ("zhipu-planctl.log*", "zhipu-planctl-*.log"):
+        old_logs = glob.glob(os.path.join(log_dir, pattern))
+        for old in old_logs:
+            _remove_old_log(old, cutoff)
 
 
-def _init_log_file(log_dir: str) -> logging.FileHandler:
-    """创建当日日志文件 handler。"""
-    today = time.strftime("%Y-%m-%d")
-    log_path = os.path.join(log_dir, f"zhipu-planctl-{today}.log")
-    fh = logging.FileHandler(log_path, encoding="utf-8")
+def _remove_old_log(path: str, cutoff: float):
+    try:
+        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+            os.remove(path)
+            log.info("清理旧日志: %s", path)
+    except OSError:
+        pass
+
+
+class RetentionTimedRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """TimedRotatingFileHandler with mtime-based retention for long-running daemons."""
+
+    def __init__(self, filename: str, retention_hours: int, **kwargs):
+        super().__init__(filename, **kwargs)
+        self.retention_hours = retention_hours
+
+    def doRollover(self):
+        super().doRollover()
+        cutoff = time.time() - max(self.retention_hours, 1) * 3600
+        log_dir = os.path.dirname(self.baseFilename)
+        for old in glob.glob(os.path.join(log_dir, "zhipu-planctl.log*")):
+            _remove_old_log(old, cutoff)
+
+
+def _init_log_file(log_dir: str,
+                   retention_hours: int = _DEFAULT_LOG_RETENTION_HOURS) -> logging.Handler:
+    """创建按天轮转的日志文件 handler，适合 systemd 下长期运行。"""
+    log_path = os.path.join(log_dir, "zhipu-planctl.log")
+    fh = RetentionTimedRotatingFileHandler(
+        log_path,
+        retention_hours=retention_hours,
+        when="midnight",
+        interval=1,
+        backupCount=0,
+        encoding="utf-8",
+    )
+    fh.suffix = "%Y-%m-%d"
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -77,10 +108,13 @@ def _init_log_file(log_dir: str) -> logging.FileHandler:
 class CommandRouter:
     """命令路由器：分离命令解析、验证和执行逻辑，减少 cli.py 复杂度。"""
 
-    def __init__(self, scheduler: "Scheduler", client: "BasePlanClient", feishu: "FeishuBot"):
+    def __init__(self, scheduler: "Scheduler", client: "BasePlanClient", feishu: "FeishuBot",
+                 cold_start_model: str, cold_start_prompt: str):
         self.scheduler = scheduler
         self.client = client
         self.feishu = feishu
+        self.cold_start_model = cold_start_model
+        self.cold_start_prompt = cold_start_prompt
 
         self._handlers = {
             "status": self._handle_status,
@@ -95,8 +129,8 @@ class CommandRouter:
                                 cold_start_times=self.scheduler.slots_as_strings())
 
     def _handle_cold_start(self, chat_id: str):
-        result = self.scheduler.cold_start_if_needed(self.client, model=self._get_default_model(),
-                                                     prompt=self._get_default_prompt(), force=True)
+        result = self.scheduler.cold_start_if_needed(self.client, model=self.cold_start_model,
+                                                     prompt=self.cold_start_prompt, force=True)
         if result["cold_started"]:
             self.feishu.send_message("✅ 冷启动成功", chat_id=chat_id)
         else:
@@ -107,7 +141,7 @@ class CommandRouter:
             "🤖 可用命令:\n"
             "  查额度 / status        - 查看当前额度\n"
             "  冷启动 / refresh       - 手动触发冷启动\n"
-            "  冷启动时间 06:00 16:00 - 修改冷启动时间\n"
+            "  冷启动时间 06:00 11:00 16:00 21:00 - 修改冷启动时间\n"
             "  帮助 / help            - 显示此菜单",
             chat_id=chat_id,
         )
@@ -118,14 +152,14 @@ class CommandRouter:
         if not parts:
             self.feishu.send_message(
                 f"⏰ 当前冷启动时间: {', '.join(self.scheduler.slots_as_strings())}\n"
-                "修改格式: 冷启动时间 06:00 16:00 21:00",
+                "修改格式: 冷启动时间 06:00 11:00 16:00 21:00",
                 chat_id=chat_id)
             return
         try:
             new_times = []
             for p in parts:
                 p = p.strip(",，;；")
-                Scheduler._parse_time(p)  # Scheduler 是模块级静态方法
+                Scheduler._parse_time(p)
                 new_times.append(p)
         except ValueError as e:
             self.feishu.send_message(f"❌ 时间格式错误: {e}", chat_id=chat_id)
@@ -136,20 +170,34 @@ class CommandRouter:
             f"✅ 冷启动时间已改为: {', '.join(new_times)}",
             chat_id=chat_id)
 
-    def _get_default_model(self) -> str:
-        return "glm-4.7"  # 可后续从 config 读取
-
-    def _get_default_prompt(self) -> str:
-        return "hi"
+    def update_cold_start_defaults(self, model: str, prompt: str):
+        self.cold_start_model = model
+        self.cold_start_prompt = prompt
 
     def dispatch(self, text: str, chat_id: str, sender_id: str):
-        key = text.strip().lower()
-        # set_times 命令带参数，特殊处理
-        if key.startswith("冷启动时间") or key.split()[0] in ("改时间", "settime"):
-            self._handle_set_times(chat_id, text.strip())
+        raw = text.strip()
+        key = raw.lower()
+        if not key:
             return
+        # set_times 命令带参数，特殊处理
+        if "冷启动时间" in key:
+            self._handle_set_times(chat_id, raw[key.index("冷启动时间"):])
+            return
+        words = key.split()
+        for marker in ("改时间", "settime"):
+            if marker in words:
+                self._handle_set_times(chat_id, " ".join(words[words.index(marker):]))
+                return
 
         handler_key = _COMMAND_MAP.get(key)
+
+        if handler_key is None:
+            # 兼容飞书 mention 剥离不完整时留下的 bot 名片后缀，如 "cli 查额度"。
+            for alias, mapped in sorted(_COMMAND_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+                if key.endswith(f" {alias}") or words[-1] == alias:
+                    handler_key = mapped
+                    break
+
         if handler_key is None:
             log.info("未知命令: %s", text)
             self.feishu.send_message(f"未识别命令: {text}", chat_id=chat_id)
@@ -166,6 +214,8 @@ def main():
     parser.add_argument("--once", action="store_true", help="仅执行一次冷启动后退出")
     parser.add_argument("--query", action="store_true", help="仅查询额度后退出")
     parser.add_argument("--log-dir", default="./logs", help="日志目录 (默认 ./logs)")
+    parser.add_argument("--log-retention-hours", type=int, default=_DEFAULT_LOG_RETENTION_HOURS,
+                        help="日志保留小时数 (默认 48)")
     parser.add_argument("--version", action="store_true", help="显示版本")
     parser.add_argument("--watch", action="store_true", help="实时仪表盘模式（终端显示额度、剩余时间等）")
     args = parser.parse_args()
@@ -176,8 +226,8 @@ def main():
         sys.exit(0)
 
     if args.log_dir:
-        _setup_log_dir(args.log_dir)
-        fh = _init_log_file(args.log_dir)
+        _setup_log_dir(args.log_dir, args.log_retention_hours)
+        fh = _init_log_file(args.log_dir, args.log_retention_hours)
         logging.getLogger().addHandler(fh)
 
     cfg = load_config(args.config)
@@ -211,7 +261,9 @@ def main():
 
     # ─── 命令处理 ───
 
-    router = CommandRouter(scheduler, client, feishu)
+    router = CommandRouter(scheduler, client, feishu,
+                           cold_start_model=cs_model,
+                           cold_start_prompt=cs_prompt)
 
     def handle_command(text: str, chat_id: str, sender_id: str):
         router.dispatch(text, chat_id, sender_id)
@@ -280,6 +332,7 @@ def main():
     log.info("额度查询间隔: %s 分钟", quota_interval)
     log.info("飞书 Bot: %s", "已启用" if feishu_bot_active else "未启用")
     log.info("日志目录: %s", args.log_dir)
+    log.info("日志保留: %s 小时", args.log_retention_hours)
 
     if feishu.notify_chat_id:
         feishu.send_message("🚀 智谱 Coding Plan 管理工具已启动")
@@ -324,6 +377,7 @@ def main():
             cs_prompt_new = new_p_cfg.get("cold_start_prompt", _DEFAULT_COLD_START_PROMPT)
             cs_model = cs_model_new
             cs_prompt = cs_prompt_new
+            router.update_cold_start_defaults(cs_model, cs_prompt)
 
             log.info("配置已热重载 (冷启动: %s, 间隔: %smin)",
                      ", ".join(new_times), new_interval)

@@ -52,11 +52,15 @@ StartLimitBurst=3
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 Environment=PATH=${INSTALL_DIR}/venv/bin:${PATH}
-ExecStart=${INSTALL_DIR}/venv/bin/python -m zhipu_planctl
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Shanghai
+ExecStart=${INSTALL_DIR}/venv/bin/python -m zhipu_planctl --config ${INSTALL_DIR}/config.yaml --log-dir ${INSTALL_DIR}/logs --log-retention-hours 48
 Restart=always
 RestartSec=30
-KillMode=process
+KillMode=control-group
 SuccessExitStatus=143
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
@@ -65,7 +69,7 @@ SERVICEOF
 # 创建定时重启 oneshot
 cat > "${USER_SYSTEMD_DIR}/${SERVICE_NAME}-restart.service" << RESTARTEOF
 [Unit]
-Description=Restart Zhipu Plan for code update
+Description=Restart Zhipu Plan service
 
 [Service]
 Type=oneshot
@@ -75,7 +79,7 @@ RESTARTEOF
 # 创建每日 05:55 重启 timer
 cat > "${USER_SYSTEMD_DIR}/${SERVICE_NAME}-restart.timer" << TIMEREOF
 [Unit]
-Description=Daily 05:55 restart for Zhipu Plan code update
+Description=Daily 05:55 restart for Zhipu Plan service
 
 [Timer]
 OnCalendar=*-*-* 05:55:00
@@ -96,7 +100,9 @@ echo "下一步:"
 echo "  1. 编辑配置文件: vi ${INSTALL_DIR}/config.yaml"
 echo "  2. 启动服务:     systemctl --user start ${SERVICE_NAME}"
 echo "  3. 查看日志:     journalctl --user -u ${SERVICE_NAME} -f"
-echo "  4. 自动重启:     每天 05:55 timer 自动 git pull 后重启"
+echo "  4. 文件日志:     tail -f ${INSTALL_DIR}/logs/zhipu-planctl.log"
+echo "  5. 自动重启:     每天 05:55 timer 自动重启服务"
+echo "  6. 若需退出 SSH 后继续运行: loginctl enable-linger \"$(whoami)\""
 echo ""
 echo "快速测试:"
 echo "  cd ${INSTALL_DIR} && source venv/bin/activate && python -m zhipu_planctl --query"

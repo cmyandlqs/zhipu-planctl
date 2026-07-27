@@ -36,6 +36,7 @@ opencode_go:
 schedule:
   cold_start_times:
     - "06:00"
+    - "11:00"
     - "16:00"
     - "21:00"
   quota_check_interval_minutes: 5

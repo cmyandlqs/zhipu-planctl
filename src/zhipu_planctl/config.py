@@ -8,32 +8,40 @@ from typing import Optional
 import yaml
 
 
+CONFIG_PATHS = ["./config.yaml", os.path.expanduser("~/.config/zhipu-plan/config.yaml")]
+
+
 def load_config(path: Optional[str] = None) -> dict:
     """从指定路径或默认候选路径加载 YAML 配置。
 
     优先从环境变量读取 API Key（ZHIPU_API_KEY 等）。
     """
-    # 优先从环境变量读取（最高优先级）
-    provider = os.environ.get("PROVIDER", "zhipu").lower()
-    env_key = f"{provider.upper()}_API_KEY"
-    if env_key in os.environ:
-        return {
-            "provider": provider,
-            provider: {
-                "api_key": os.environ[env_key],
-                "cold_start_model": os.environ.get("COLD_START_MODEL", "glm-4.7"),
-                "cold_start_prompt": os.environ.get("COLD_START_PROMPT", "hi"),
-            },
-        }
-
     if path and os.path.exists(path):
         with open(path, encoding="utf-8") as f:
-            return yaml.safe_load(f)
+            cfg = yaml.safe_load(f) or {}
+    else:
+        cfg = {}
+        for cp in CONFIG_PATHS:
+            if os.path.exists(cp):
+                with open(cp, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                break
 
-    for cp in ["./config.yaml", os.path.expanduser("~/.config/zhipu-plan/config.yaml")]:
-        if os.path.exists(cp):
-            with open(cp, encoding="utf-8") as f:
-                return yaml.safe_load(f)
+    provider = os.environ.get("PROVIDER", cfg.get("provider", "zhipu")).lower()
+    env_key = f"{provider.upper()}_API_KEY"
+    if env_key in os.environ:
+        cfg.setdefault("provider", provider)
+        cfg["provider"] = provider
+        p_cfg = cfg.setdefault(provider, {})
+        p_cfg["api_key"] = os.environ[env_key]
+        if "COLD_START_MODEL" in os.environ:
+            p_cfg["cold_start_model"] = os.environ["COLD_START_MODEL"]
+        if "COLD_START_PROMPT" in os.environ:
+            p_cfg["cold_start_prompt"] = os.environ["COLD_START_PROMPT"]
+        return cfg
+
+    if cfg:
+        return cfg
 
     raise FileNotFoundError(
         f"未找到配置文件，已搜索: {', '.join(CONFIG_PATHS)}\n"

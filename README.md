@@ -4,12 +4,12 @@
 
 ## 功能
 
-- 每天 06:00 / 16:00 / 21:00 自动冷启动，重新触发 5 小时窗口（支持飞书命令动态修改时间）
+- 每天 06:00 / 11:00 / 16:00 / 21:00 自动冷启动，覆盖 06-11 / 11-16 / 16-21 / 21-02 四个 5 小时窗口（支持飞书命令动态修改时间）
 - 每 5 分钟查询一次额度，记录当前 5 小时窗口的已用百分比和重置时间
 - 飞书 Bot 支持: 查额度、手动冷启动、修改冷启动时间、状态通知
 - SIGHUP 热重载配置（无需重启进程）
 - 窗口到期前 30 分钟飞书告警
-- 日志文件按天存储（`--log-dir`），自动清理 24 小时前的日志
+- 日志文件按天轮转（`--log-dir`），默认只保留最近 48 小时
 - 多厂商适配器架构，支持:
   - **智谱 (Zhipu)** — ✅ 已实现，支持查额度 + 冷启动
   - **OpenCode Go** — ✅ 已实现，支持冷启动（用量查询需控制台）
@@ -36,6 +36,8 @@ python -m zhipu_planctl [选项]
   --once               执行一次冷启动并输出 JSON，然后退出
   --version            显示版本号
   --log-dir PATH       日志目录 (默认: ./logs)
+  --log-retention-hours N
+                       日志保留小时数 (默认: 48)
   --watch              实时仪表盘模式（每5秒更新额度、剩余时间等）
 
 示例:
@@ -61,9 +63,9 @@ kill -HUP $(pgrep -f zhipu_planctl)
 
 ## 日志
 
-日志按天存储到 `--log-dir` 指定的目录，文件名为 `zhipu-planctl-YYYY-MM-DD.log`。
+日志按天轮转到 `--log-dir` 指定的目录，当前日志文件为 `zhipu-planctl.log`，历史文件为 `zhipu-planctl.log.YYYY-MM-DD`。
 
-启动时自动清理超过 24 小时的旧日志文件。
+默认保留最近 48 小时日志，可通过 `--log-retention-hours` 调整。启动时会清理旧日志，长期运行跨天轮转时也会继续清理过期文件。
 
 所有操作均记录到日志: 冷启动触发/结果、额度查询、飞书消息收发、配置热重载、异常信息。
 
@@ -112,6 +114,21 @@ systemctl --user start zhipu-plan
 systemctl --user enable zhipu-plan
 ```
 
+systemd 部署后可以同时查看 journal 和文件日志:
+
+```bash
+journalctl --user -u zhipu-plan -f
+tail -f ~/zhipu-coding-plan/logs/zhipu-planctl.log
+```
+
+如果希望退出 SSH 后 user service 仍保持运行，需要在服务器上执行:
+
+```bash
+loginctl enable-linger "$(whoami)"
+```
+
+安装脚本生成的 systemd service 会显式设置 `TZ=Asia/Shanghai`，因此冷启动时间按北京时间解释。若手动部署，请确认服务器本地时区或 service 的 `TZ` 与你的目标时间一致。
+
 ## 配置说明
 
 ### 切换厂商
@@ -139,5 +156,5 @@ zhipu:
 |------|------|
 | 查额度 / status | 查看当前 5 小时窗口额度和剩余时间 |
 | 冷启动 / refresh | 手动触发一次冷启动 |
-| 冷启动时间 06:00 16:00 21:00 | 修改自动冷启动时间 (SIGHUP 热重载也生效) |
+| 冷启动时间 06:00 11:00 16:00 21:00 | 修改自动冷启动时间 (SIGHUP 热重载也生效) |
 | 帮助 / help | 显示命令列表 |

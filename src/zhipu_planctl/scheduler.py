@@ -55,7 +55,14 @@ class Scheduler:
         parts = t.strip().split(":")
         if len(parts) != 2:
             raise ValueError(f"时间格式应为 HH:MM，收到: {t!r}")
-        return int(parts[0]), int(parts[1])
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError as exc:
+            raise ValueError(f"时间格式应为 HH:MM，收到: {t!r}") from exc
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"时间超出范围，应为 00:00-23:59，收到: {t!r}")
+        return hour, minute
 
     def _is_window_expired(self, resets_at_iso: Optional[str]) -> bool:
         """判断 5 小时窗口是否已经过了重置时间。

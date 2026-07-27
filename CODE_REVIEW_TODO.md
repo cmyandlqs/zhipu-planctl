@@ -44,10 +44,10 @@
 - [x] **日志写文件**：`--log-dir ./logs`，每天一个 `zhipu-planctl-YYYY-MM-DD.log`，启动时清理 >24h 旧日志
 - [x] **`--version` 标志**：打印 `zhipu-planctl 1.0.0`
 - [x] **Config 热重载 (SIGHUP)**：收到 SIGHUP 重新读 config.yaml，实时更新冷启动时间、间隔、key 等
-- [x] **飞书命令改冷启动时间**：`@机器人 冷启动时间 06:00 16:00 21:00` 或 `@机器人 改时间 06:00 ...`
+- [x] **飞书命令改冷启动时间**：`@机器人 冷启动时间 06:00 11:00 16:00 21:00` 或 `@机器人 改时间 06:00 ...`
 - [x] **窗口到期前告警**：重置前 30min 飞书推送提醒
-- [ ] **环境变量读 API Key**：`config.py` 加 `os.environ.get("ZHIPU_API_KEY")` 等
+- [x] **环境变量读 API Key**：`config.py` 支持 `ZHIPU_API_KEY` 等环境变量覆盖文件配置
 - [ ] **CLI 面板模式 `--watch`**：终端实时展示额度、窗口剩余时间、下次冷启动倒计时
 - [ ] **用量统计历史**：每天记录用量峰值和总用量到 CSV
 - [ ] **多 provider 同时管理**：`@查额度 zhipu` / `@查额度 opencode`
-- [ ] **systemd timer 代替常驻**：在 06:00/16:00/21:00 触发 service 做一次冷启动后退出
+- [ ] **systemd timer 代替常驻**：在 06:00/11:00/16:00/21:00 触发 service 做一次冷启动后退出
