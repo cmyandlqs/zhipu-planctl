@@ -31,6 +31,10 @@ _DEFAULT_RETRY_MAX = 10           # 冷启动最大重试次数
 _DEFAULT_RETRY_DELAY_SEC = 2     # 重试间隔（秒）
 _EXPIRY_WARN_MINUTES = 30         # 窗口到期前多少分钟发告警
 
+_BEIJING = timezone(timedelta(hours=8))
+_QUIET_START = 0
+_QUIET_END = 6
+
 
 class Scheduler:
     """调度器：单实例，每 tick() 一次最多做两件事（冷启动 + 额度）。
@@ -158,6 +162,12 @@ class Scheduler:
             return datetime.now(timezone.utc) >= datetime.fromisoformat(resets_at_iso)
         except (ValueError, TypeError):
             return True
+
+    @staticmethod
+    def _is_quiet_hours() -> bool:
+        """北京时间 00:00-05:59 为静默时段，不查额度。"""
+        hour = datetime.now(timezone.utc).astimezone(_BEIJING).hour
+        return _QUIET_START <= hour < _QUIET_END
 
     def _reset_daily(self):
         """跨天时清空时间槽集合，避免第二天漏处理或重复触发。
@@ -400,8 +410,10 @@ class Scheduler:
                 on_quota(result["quota"])
             return  # 完成本次 tick
 
-        # ─── 分支 2：纯额度时间点 ───
+        # ─── 分支 2：纯额度时间点 → 查额度（静默时段跳过） ───
         if is_quota_time:
+            if self._is_quiet_hours():
+                return
             self._last_quota_check = now
             quota = self.check_quota_now(client)
             on_quota(quota)

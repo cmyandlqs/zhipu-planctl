@@ -251,5 +251,141 @@ class TickTest(unittest.TestCase):
         self.assertFalse(events[0]["cold_started"])
 
 
+# ─────────────────── 静默时段测试 ───────────────────
+
+
+class QuietHoursTest(unittest.TestCase):
+    """00:00-05:59 北京时间为静默时段，不查额度。"""
+
+    def _utc_at_beijing(self, hour: int, minute: int = 0) -> datetime:
+        """构造一个 UTC 时间，使得北京时间 = hour:minute。"""
+        return datetime(2026, 7, 28, hour - 8, minute, tzinfo=timezone.utc) if hour >= 8 \
+            else datetime(2026, 7, 28, hour + 16, minute, tzinfo=timezone.utc)
+
+    def _patch_dt(self, beijing_hour: int, beijing_minute: int = 0):
+        dt = self._utc_at_beijing(beijing_hour, beijing_minute)
+        return patch("zhipu_planctl.scheduler.datetime", wraps=datetime)
+
+    def test_is_quiet_hours_true_0000(self):
+        with patch("zhipu_planctl.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = self._utc_at_beijing(0, 0)
+            mock_dt.strftime = datetime.strftime
+            from zhipu_planctl.scheduler import Scheduler
+            self.assertTrue(Scheduler._is_quiet_hours())
+
+    def test_is_quiet_hours_true_0359(self):
+        with patch("zhipu_planctl.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = self._utc_at_beijing(3, 59)
+            mock_dt.strftime = datetime.strftime
+            from zhipu_planctl.scheduler import Scheduler
+            self.assertTrue(Scheduler._is_quiet_hours())
+
+    def test_is_quiet_hours_true_0559(self):
+        with patch("zhipu_planctl.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = self._utc_at_beijing(5, 59)
+            mock_dt.strftime = datetime.strftime
+            from zhipu_planctl.scheduler import Scheduler
+            self.assertTrue(Scheduler._is_quiet_hours())
+
+    def test_is_quiet_hours_false_0600(self):
+        with patch("zhipu_planctl.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = self._utc_at_beijing(6, 0)
+            mock_dt.strftime = datetime.strftime
+            from zhipu_planctl.scheduler import Scheduler
+            self.assertFalse(Scheduler._is_quiet_hours())
+
+    def test_is_quiet_hours_false_1200(self):
+        with patch("zhipu_planctl.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = self._utc_at_beijing(12, 0)
+            mock_dt.strftime = datetime.strftime
+            from zhipu_planctl.scheduler import Scheduler
+            self.assertFalse(Scheduler._is_quiet_hours())
+
+    def test_is_quiet_hours_false_2000(self):
+        with patch("zhipu_planctl.scheduler.datetime") as mock_dt:
+            mock_dt.now.return_value = self._utc_at_beijing(20, 0)
+            mock_dt.strftime = datetime.strftime
+            from zhipu_planctl.scheduler import Scheduler
+            self.assertFalse(Scheduler._is_quiet_hours())
+
+    def test_tick_skips_quota_during_quiet_hours_simple(self):
+        """静默时段的纯 quota tick 不调用 client 也不更新 _last_quota_check。"""
+        s = Scheduler(cold_start_times=["08:00"], quota_check_interval_minutes=5)
+        s._last_quota_check = None
+        client = _make_mock_client()
+        events = []
+
+        with patch.object(s, "_is_quiet_hours", return_value=True):
+            s.tick(client, "glm-4-air", "hi",
+                   on_cold_start=lambda r: events.append(("cs", r)),
+                   on_quota=lambda q: events.append(("quota", q)))
+
+        self.assertEqual(events, [])
+        self.assertIsNone(s._last_quota_check)
+
+    def test_tick_allows_cold_start_during_quiet_hours(self):
+        """静默时段内，冷启动槽位仍然正常执行。"""
+        now = datetime.now()
+        s = Scheduler(cold_start_times=[f"{now.hour:02d}:{now.minute:02d}"])
+        s._processed_slots = set()
+        client = _make_client(
+            quota_side_effect=[
+                _quota_ns(expired=True),   # 初始检查
+                _quota_ns(expired=False),  # 冷启动后验证
+            ],
+            cold_start_side_effect=[True],
+        )
+        events = []
+
+        with patch.object(s, "_is_quiet_hours", return_value=True):
+            with patch("zhipu_planctl.scheduler.time.sleep"):
+                s.tick(client, "glm-4-air", "hi",
+                       on_cold_start=lambda r: events.append(("cs", r)),
+                       on_quota=lambda q: events.append(("quota", q)))
+
+        self.assertEqual(len(events), 2)  # on_cold_start + on_quota (is_quota_time)
+        self.assertEqual(events[0][0], "cs")
+        self.assertTrue(events[0][1]["cold_started"])
+        self.assertEqual(events[1][0], "quota")
+
+    def test_tick_quota_resumes_after_quiet_hours(self):
+        """出静默时段后正常查额度。"""
+        s = Scheduler(cold_start_times=["08:00"], quota_check_interval_minutes=5)
+        s._last_quota_check = None
+        client = _make_mock_client()
+        events = []
+
+        with patch.object(s, "_is_quiet_hours", return_value=False):
+            s.tick(client, "glm-4-air", "hi",
+                   on_cold_start=lambda r: events.append(("cs", r)),
+                   on_quota=lambda q: events.append(("quota", q)))
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], "quota")
+        self.assertIsNotNone(s._last_quota_check)
+
+    def test_tick_quota_updated_after_quiet_hours_resume(self):
+        """出静默后 _last_quota_check 被正确更新，且 quota 不再重复触发。"""
+        s = Scheduler(cold_start_times=["08:00"], quota_check_interval_minutes=5)
+        s._last_quota_check = None
+        client = _make_mock_client()
+        events = []
+
+        with patch.object(s, "_is_quiet_hours", return_value=False):
+            s.tick(client, "glm-4-air", "hi",
+                   on_cold_start=lambda r: events.append("cs"),
+                   on_quota=lambda q: events.append("quota"))
+        # 第一次 tick: 查了额度
+        self.assertEqual(events, ["quota"])
+
+        # 第二次 tick: 间隔未过 5min，不应再查
+        events.clear()
+        with patch.object(s, "_is_quiet_hours", return_value=False):
+            s.tick(client, "glm-4-air", "hi",
+                   on_cold_start=lambda r: events.append("cs"),
+                   on_quota=lambda q: events.append("quota"))
+        self.assertEqual(events, [])
+
+
 if __name__ == "__main__":
     unittest.main()
